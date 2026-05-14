@@ -193,7 +193,7 @@ async function handleAssistantRequest(req, res) {
   const pronunciationNote = "";
 
   let systemPrompt = basePrompt + pronunciationNote;
-  let firstMessage = "Hi, you've reached Intent Discovery AI. Quick question before we start - are you looking for coaching on discovering what your clients need, or are you the one trying to figure out what you need? Either way works great.";
+  let firstMessage = "Hi, you've reached Intent Discovery AI. The goal here is to help you uncover what you actually need, beyond just what's on the surface. This is a relaxed conversation. Nothing's being sold, and you're in control of where it goes and when it stops. So to point us in the right direction, are you looking to practice discovering what your clients need, or are you the one trying to figure out something for yourself? Either path works great.";
 
   if (!customer) {
     console.log(`   🆕 NEW CALLER - no history`);
