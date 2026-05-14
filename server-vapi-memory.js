@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
@@ -9,58 +8,124 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Log all incoming requests
 app.use((req, res, next) => {
   console.log(`\n📨 ${req.method} ${req.path}`);
   next();
 });
 
-const MEMORY_FILE = path.join(__dirname, 'vapi-memory.json');
+// ============================================================
+// Storage adapter
+//   - Postgres when DATABASE_URL is set (Render deployment)
+//   - Local JSON file otherwise (local dev)
+// ============================================================
 
-// Initialize memory
-if (!fs.existsSync(MEMORY_FILE)) {
-  fs.writeFileSync(MEMORY_FILE, JSON.stringify({ customers: {} }, null, 2));
-}
+const usePostgres = !!process.env.DATABASE_URL;
+let storage;
 
-function readMemory() {
-  return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
-}
-
-function writeMemory(data) {
-  fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
-}
-
-function getCustomerHistory(phoneNumber) {
-  const memory = readMemory();
-  return memory.customers[phoneNumber] || null;
-}
-
-function saveCallTranscript(phoneNumber, callId, transcript, metadata) {
-  const memory = readMemory();
-
-  if (!memory.customers[phoneNumber]) {
-    memory.customers[phoneNumber] = {
-      phoneNumber,
-      firstCall: new Date().toISOString(),
-      callHistory: [],
-      conversationSummary: ''
-    };
-  }
-
-  const customer = memory.customers[phoneNumber];
-  customer.callHistory.push({
-    callId,
-    date: new Date().toISOString(),
-    transcript,
-    metadata
+if (usePostgres) {
+  const { Pool } = require('pg');
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
   });
 
-  // Build a conversation summary from last 3 calls (or all if fewer than 3)
-  const recentCalls = customer.callHistory.slice(-3);
-  customer.conversationSummary = buildConversationSummary(recentCalls);
+  storage = {
+    backend: 'postgres',
+    async init() {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS customers (
+          phone_number TEXT PRIMARY KEY,
+          first_call TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          call_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+          conversation_summary TEXT NOT NULL DEFAULT ''
+        );
+      `);
+    },
+    async getCustomer(phone) {
+      const { rows } = await pool.query(
+        'SELECT phone_number, first_call, call_history, conversation_summary FROM customers WHERE phone_number = $1',
+        [phone]
+      );
+      if (rows.length === 0) return null;
+      return rowToCustomer(rows[0]);
+    },
+    async saveCall(phone, callRecord) {
+      const existing = await this.getCustomer(phone);
+      const callHistory = existing ? [...existing.callHistory, callRecord] : [callRecord];
+      const summary = buildConversationSummary(callHistory.slice(-3));
+      await pool.query(
+        `INSERT INTO customers (phone_number, first_call, call_history, conversation_summary)
+         VALUES ($1, NOW(), $2::jsonb, $3)
+         ON CONFLICT (phone_number) DO UPDATE
+           SET call_history = $2::jsonb, conversation_summary = $3`,
+        [phone, JSON.stringify(callHistory), summary]
+      );
+      return callHistory.length;
+    },
+    async getAll() {
+      const { rows } = await pool.query('SELECT * FROM customers');
+      const customers = {};
+      for (const row of rows) customers[row.phone_number] = rowToCustomer(row);
+      return { customers };
+    },
+    async count() {
+      const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM customers');
+      return rows[0].n;
+    },
+    async clear() {
+      await pool.query('DELETE FROM customers');
+    },
+  };
 
-  writeMemory(memory);
-  console.log(`💾 Saved conversation for ${phoneNumber} (${customer.callHistory.length} total calls)`);
+  function rowToCustomer(row) {
+    return {
+      phoneNumber: row.phone_number,
+      firstCall: row.first_call instanceof Date ? row.first_call.toISOString() : row.first_call,
+      callHistory: row.call_history,
+      conversationSummary: row.conversation_summary,
+    };
+  }
+} else {
+  const MEMORY_FILE = path.join(__dirname, 'vapi-memory.json');
+  if (!fs.existsSync(MEMORY_FILE)) {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify({ customers: {} }, null, 2));
+  }
+  const read = () => JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
+  const write = (data) => fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
+
+  storage = {
+    backend: 'file',
+    async init() {},
+    async getCustomer(phone) {
+      return read().customers[phone] || null;
+    },
+    async saveCall(phone, callRecord) {
+      const data = read();
+      if (!data.customers[phone]) {
+        data.customers[phone] = {
+          phoneNumber: phone,
+          firstCall: new Date().toISOString(),
+          callHistory: [],
+          conversationSummary: '',
+        };
+      }
+      data.customers[phone].callHistory.push(callRecord);
+      data.customers[phone].conversationSummary = buildConversationSummary(
+        data.customers[phone].callHistory.slice(-3)
+      );
+      write(data);
+      return data.customers[phone].callHistory.length;
+    },
+    async getAll() {
+      return read();
+    },
+    async count() {
+      return Object.keys(read().customers).length;
+    },
+    async clear() {
+      write({ customers: {} });
+    },
+  };
 }
 
 function buildConversationSummary(recentCalls) {
@@ -73,17 +138,14 @@ function buildConversationSummary(recentCalls) {
     const callDate = new Date(call.date).toLocaleDateString();
     summary += `Call ${index + 1} (${callDate}):\n`;
 
-    // Include FULL transcript (both user and assistant messages) for complete context
     const fullConversation = call.transcript
       .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.message}`)
       .join('\n');
 
-    // Add the call summary if available (Vapi provides this)
     if (call.metadata?.summary) {
       summary += `Summary: ${call.metadata.summary}\n\n`;
     }
 
-    // Include transcript excerpt (truncate if too long, but keep more than 300 chars)
     const maxLength = 800;
     if (fullConversation.length > maxLength) {
       summary += fullConversation.substring(0, maxLength) + '...\n\n';
@@ -97,46 +159,37 @@ function buildConversationSummary(recentCalls) {
   return summary;
 }
 
-// Universal webhook handler - handles ALL Vapi server messages
+// ============================================================
+// Webhook routing
+// ============================================================
+
 app.post('/webhook/assistant-request', async (req, res) => {
   const messageType = req.body.message?.type || req.body.type;
 
-  // Route to appropriate handler based on message type
-  if (messageType === 'end-of-call-report') {
-    return handleEndOfCall(req, res);
-  } else if (messageType === 'transcript') {
-    return handleTranscript(req, res);
-  } else if (messageType === 'assistant-request') {
-    return handleAssistantRequest(req, res);
-  }
+  if (messageType === 'end-of-call-report') return handleEndOfCall(req, res);
+  if (messageType === 'transcript') return handleTranscript(req, res);
+  if (messageType === 'assistant-request') return handleAssistantRequest(req, res);
 
-  // Unknown message type
   console.log(`⚠️  Unknown message type: ${messageType}`);
   return res.sendStatus(200);
 });
 
-// Handle assistant-request webhook
 async function handleAssistantRequest(req, res) {
-  // Log the full payload to understand Vapi's structure
   console.log('\n🔍 DEBUG: Full webhook payload:');
   console.log(JSON.stringify(req.body, null, 2));
 
-  // Extract phone number from the webhook payload
   const phoneNumber = req.body.message?.call?.customer?.number ||
                      req.body.message?.customer?.number ||
                      req.body.call?.customer?.number;
 
   console.log(`\n📞 Incoming call from: ${phoneNumber}`);
 
-  // Load base prompt
   const basePrompt = fs.readFileSync(
     path.join(__dirname, 'enhanced-prompt.txt'),
     'utf8'
   );
 
-  // Check if this customer has previous conversation history
-  const customer = getCustomerHistory(phoneNumber);
-
+  const customer = await storage.getCustomer(phoneNumber);
   const pronunciationNote = "";
 
   let systemPrompt = basePrompt + pronunciationNote;
@@ -145,14 +198,12 @@ async function handleAssistantRequest(req, res) {
   if (!customer) {
     console.log(`   🆕 NEW CALLER - no history`);
   } else {
-    // RETURNING CALLER - Inject conversation history
     console.log(`   ✅ RETURNING CALLER - ${customer.callHistory.length} previous call(s)`);
     systemPrompt = `${basePrompt}${pronunciationNote}\n\n---\n\n${customer.conversationSummary}`;
     firstMessage = "Welcome back to Intent Discovery AI! I remember our last conversation. Ready to pick up where we left off?";
     console.log(`   💭 Injecting conversation history (${customer.conversationSummary.length} chars)`);
   }
 
-  // Return assistant configuration - use messages array for transient webhooks
   return res.json({
     assistant: {
       firstMessage: firstMessage,
@@ -160,12 +211,7 @@ async function handleAssistantRequest(req, res) {
         provider: "openai",
         model: "gpt-4",
         temperature: 0.7,
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt
-          }
-        ]
+        messages: [{ role: "system", content: systemPrompt }]
       },
       recordingEnabled: true,
       transcriber: {
@@ -183,8 +229,7 @@ async function handleAssistantRequest(req, res) {
   });
 }
 
-// Handle end-of-call webhook
-function handleEndOfCall(req, res) {
+async function handleEndOfCall(req, res) {
   console.log('\n🔍 DEBUG: End-of-call payload:');
   console.log(JSON.stringify(req.body, null, 2));
 
@@ -202,27 +247,33 @@ function handleEndOfCall(req, res) {
     return res.sendStatus(200);
   }
 
-  // Parse transcript from artifact.messages (Vapi's actual format)
   const messages = artifact.messagesOpenAIFormatted || artifact.messages || [];
   const parsedTranscript = messages
     .filter(m => m.role !== 'system')
-    .map(m => ({
-      role: m.role,
-      message: m.content || m.message
-    }));
+    .map(m => ({ role: m.role, message: m.content || m.message }));
 
-  // Save the conversation
-  saveCallTranscript(phoneNumber, call.id, parsedTranscript, {
-    duration: call.duration,
-    endedReason: call.endedReason,
-    cost: call.cost,
-    summary: message.summary || ''
-  });
+  const callRecord = {
+    callId: call.id,
+    date: new Date().toISOString(),
+    transcript: parsedTranscript,
+    metadata: {
+      duration: call.duration,
+      endedReason: call.endedReason,
+      cost: call.cost,
+      summary: message.summary || ''
+    }
+  };
+
+  try {
+    const total = await storage.saveCall(phoneNumber, callRecord);
+    console.log(`💾 Saved conversation for ${phoneNumber} (${total} total calls)`);
+  } catch (err) {
+    console.error('❌ Failed to save call:', err);
+  }
 
   return res.sendStatus(200);
 }
 
-// Handle transcript updates
 function handleTranscript(req, res) {
   const message = req.body.message || req.body;
   const transcript = message.transcript;
@@ -231,41 +282,85 @@ function handleTranscript(req, res) {
   return res.sendStatus(200);
 }
 
-// Keep legacy endpoints for compatibility
 app.post('/webhook/end-of-call-report', handleEndOfCall);
 app.post('/webhook/transcript', handleTranscript);
 
-// API: View customer memory
-app.get('/memory/:phone?', (req, res) => {
-  const memory = readMemory();
-  if (req.params.phone) {
-    const customer = memory.customers[req.params.phone];
-    return customer ? res.json(customer) : res.status(404).json({ error: 'Not found' });
+// ============================================================
+// Status + memory API
+// ============================================================
+
+app.get('/', async (req, res) => {
+  const customerCount = await storage.count();
+  res.type('html').send(`<!doctype html>
+<html><head><title>Intent Discovery AI</title>
+<style>body{font-family:system-ui;max-width:640px;margin:40px auto;padding:0 20px;color:#222}
+code{background:#f3f3f3;padding:2px 6px;border-radius:4px}
+.ok{color:#0a7d2e;font-weight:600}
+.meta{color:#666;font-size:14px}</style></head>
+<body>
+<h1>Intent Discovery AI</h1>
+<p class="ok">Server is running on port ${port}.</p>
+<p class="meta">Storage backend: <strong>${storage.backend}</strong></p>
+<p>Customers in memory: <strong>${customerCount}</strong></p>
+<h3>Endpoints</h3>
+<ul>
+  <li><code>POST /webhook/assistant-request</code> — Vapi webhook</li>
+  <li><code>POST /webhook/end-of-call-report</code></li>
+  <li><code>POST /webhook/transcript</code></li>
+  <li><a href="/memory">GET /memory</a> — view all conversation history</li>
+  <li><code>GET /memory/:phone</code> — view one caller's history</li>
+  <li><code>DELETE /memory</code> — clear all history</li>
+  <li><a href="/healthz">GET /healthz</a> — keep-alive ping target</li>
+</ul>
+</body></html>`);
+});
+
+app.get('/healthz', (req, res) => res.json({ ok: true, backend: storage.backend }));
+
+app.get('/memory/:phone?', async (req, res) => {
+  try {
+    if (req.params.phone) {
+      const customer = await storage.getCustomer(req.params.phone);
+      return customer ? res.json(customer) : res.status(404).json({ error: 'Not found' });
+    }
+    res.json(await storage.getAll());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json(memory);
 });
 
-// API: Clear all memory (for testing)
-app.delete('/memory', (req, res) => {
-  writeMemory({ customers: {} });
-  res.json({ message: 'Memory cleared' });
+app.delete('/memory', async (req, res) => {
+  try {
+    await storage.clear();
+    res.json({ message: 'Memory cleared' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.listen(port, () => {
-  console.log('\n🚀 Intent Discovery AI Server');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`📍 Server: http://localhost:${port}`);
-  console.log(`🎯 Assistant webhook: POST /webhook/assistant-request`);
-  console.log(`📝 End of call: POST /webhook/end-of-call-report`);
-  console.log(`💬 Transcript: POST /webhook/transcript`);
-  console.log(`💾 View memory: GET /memory/:phone`);
-  console.log(`🗑️  Clear memory: DELETE /memory`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// ============================================================
+// Startup
+// ============================================================
 
-  console.log('\n📋 Next Steps:');
-  console.log('   1. Run ngrok: ngrok http 3000');
-  console.log('   2. Update Vapi assistant with webhook URLs:');
-  console.log('      - Server URL (Assistant Request): https://your-ngrok-url/webhook/assistant-request');
-  console.log('      - End of Call Report: https://your-ngrok-url/webhook/end-of-call-report');
-  console.log('   3. Make test calls to verify memory is working!\n');
-});
+(async () => {
+  try {
+    await storage.init();
+  } catch (err) {
+    console.error('❌ Storage init failed:', err);
+    process.exit(1);
+  }
+
+  app.listen(port, () => {
+    console.log('\n🚀 Intent Discovery AI Server');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`📍 Server: http://localhost:${port}`);
+    console.log(`💽 Storage: ${storage.backend}`);
+    console.log(`🎯 Assistant webhook: POST /webhook/assistant-request`);
+    console.log(`📝 End of call: POST /webhook/end-of-call-report`);
+    console.log(`💬 Transcript: POST /webhook/transcript`);
+    console.log(`💾 View memory: GET /memory/:phone`);
+    console.log(`🗑️  Clear memory: DELETE /memory`);
+    console.log(`❤️  Health: GET /healthz`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  });
+})();
