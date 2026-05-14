@@ -143,7 +143,7 @@ This is a **voice AI system** that remembers previous conversations with callers
 ## File Structure
 
 ```
-voice-bot-poc1-main/
+Intent-Discovery-AI-Voice-Agent/
 ├── server-vapi-memory.js       # Main webhook server (Express app)
 ├── enhanced-prompt.txt          # AI system prompt (personality & instructions)
 ├── vapi-memory.json            # Conversation storage (auto-created, gitignored)
@@ -279,8 +279,8 @@ If you want to use specific voice providers (ElevenLabs, etc.), you may need API
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/ianpilon/voice-bot-poc1.git
-   cd voice-bot-poc1
+   git clone https://github.com/ianpilon/Intent-Discovery-AI-Voice-Agent.git
+   cd Intent-Discovery-AI-Voice-Agent
    ```
 
 2. **Install dependencies:**
@@ -886,7 +886,7 @@ Before deploying to production:
 - **Vapi Documentation**: https://docs.vapi.ai
 - **Vapi Dashboard**: https://dashboard.vapi.ai
 - **ngrok Documentation**: https://ngrok.com/docs
-- **GitHub Repository**: https://github.com/ianpilon/voice-bot-poc1
+- **GitHub Repository**: https://github.com/ianpilon/Intent-Discovery-AI-Voice-Agent
 
 ---
 

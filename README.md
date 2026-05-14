@@ -30,8 +30,8 @@ The system uses Vapi's transient assistant pattern, which means:
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/ianpilon/voice-bot-poc1.git
-cd voice-bot-poc1
+git clone https://github.com/ianpilon/Intent-Discovery-AI-Voice-Agent.git
+cd Intent-Discovery-AI-Voice-Agent
 ```
 
 2. Install dependencies:
