@@ -455,6 +455,71 @@
         transition: none;
       }
     }
+
+    /* ============================================================
+       Call button state colors
+       Idle  = green (start the call)
+       Active = red (end the call)
+       Connecting = idle color, slightly dimmed
+       ============================================================ */
+    [data-call-btn] {
+      --call-idle:        oklch(55% 0.16 150);
+      --call-idle-light:  oklch(62% 0.14 150);
+      --call-active:      oklch(52% 0.20 25);
+      --call-active-light: oklch(58% 0.18 25);
+      transition: background 200ms var(--ease-out-quart),
+                  color 200ms var(--ease-out-quart),
+                  border-color 200ms var(--ease-out-quart),
+                  opacity 200ms var(--ease-out-quart);
+    }
+
+    /* Filled buttons (hero + final CTA) */
+    .hero-cta[data-call-btn],
+    .cta-phone[data-call-btn] {
+      background: var(--call-idle);
+      border-color: var(--call-idle);
+    }
+    .hero-cta[data-call-btn]:hover,
+    .cta-phone[data-call-btn]:hover {
+      background: var(--call-idle-light);
+      border-color: var(--call-idle-light);
+    }
+    .hero-cta[data-state="active"],
+    .cta-phone[data-state="active"] {
+      background: var(--call-active);
+      border-color: var(--call-active);
+    }
+    .hero-cta[data-state="active"]:hover,
+    .cta-phone[data-state="active"]:hover {
+      background: var(--call-active-light);
+      border-color: var(--call-active-light);
+    }
+
+    /* Outline button (nav) */
+    .nav-link[data-call-btn] {
+      color: var(--call-idle);
+      border-color: var(--call-idle);
+      background: transparent;
+    }
+    .nav-link[data-call-btn]:hover {
+      background: var(--call-idle);
+      color: #fff;
+    }
+    .nav-link[data-state="active"] {
+      color: var(--call-active);
+      border-color: var(--call-active);
+      background: transparent;
+    }
+    .nav-link[data-state="active"]:hover {
+      background: var(--call-active);
+      color: #fff;
+    }
+
+    /* Connecting: keep idle color, dim slightly */
+    [data-call-btn][data-state="connecting"] {
+      opacity: 0.7;
+      cursor: progress;
+    }
   </style>
 </head>
 <body>
