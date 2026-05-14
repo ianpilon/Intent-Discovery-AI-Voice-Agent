@@ -8,6 +8,15 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
+// CORS — allow the GitHub Pages site (and local dev) to fetch assistant configs
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 app.use((req, res, next) => {
   console.log(`\n📨 ${req.method} ${req.path}`);
   next();
@@ -204,29 +213,36 @@ async function handleAssistantRequest(req, res) {
     console.log(`   💭 Injecting conversation history (${customer.conversationSummary.length} chars)`);
   }
 
-  return res.json({
-    assistant: {
-      firstMessage: firstMessage,
-      model: {
-        provider: "openai",
-        model: "gpt-4",
-        temperature: 0.7,
-        messages: [{ role: "system", content: systemPrompt }]
-      },
-      recordingEnabled: true,
-      transcriber: {
-        provider: "deepgram",
-        model: "nova-2",
-        language: "en"
-      },
-      endCallPhrases: ["goodbye", "bye", "talk to you later", "gotta go", "have to go"],
-      maxDurationSeconds: 1800,
-      backgroundSound: "off",
-      backchannelingEnabled: true,
-      backgroundDenoisingEnabled: true,
-      serverMessages: ["end-of-call-report", "transcript"]
-    }
-  });
+  const isWeb = req.query.web === '1';
+
+  const assistant = {
+    firstMessage: firstMessage,
+    model: {
+      provider: "openai",
+      model: "gpt-4",
+      temperature: 0.7,
+      messages: [{ role: "system", content: systemPrompt }]
+    },
+    recordingEnabled: true,
+    transcriber: {
+      provider: "deepgram",
+      model: "nova-2",
+      language: "en"
+    },
+    endCallPhrases: ["goodbye", "bye", "talk to you later", "gotta go", "have to go"],
+    maxDurationSeconds: 1800,
+    backgroundSound: "off",
+    backchannelingEnabled: true,
+    backgroundDenoisingEnabled: true,
+    serverMessages: ["end-of-call-report", "transcript"]
+  };
+
+  // Web SDK requires an inline voice; phone calls fall back to dashboard config
+  if (isWeb) {
+    assistant.voice = { provider: "vapi", voiceId: "Elliot" };
+  }
+
+  return res.json({ assistant });
 }
 
 async function handleEndOfCall(req, res) {
@@ -244,6 +260,12 @@ async function handleEndOfCall(req, res) {
 
   if (!phoneNumber || !artifact?.transcript) {
     console.log('   ⚠️  No phone number or transcript - skipping save');
+    return res.sendStatus(200);
+  }
+
+  // Anonymous web calls: log but don't persist
+  if (phoneNumber.startsWith('web_')) {
+    console.log('   🌐 Anonymous web call - skipping save');
     return res.sendStatus(200);
   }
 

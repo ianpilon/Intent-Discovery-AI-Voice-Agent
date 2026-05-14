@@ -462,7 +462,7 @@
   <nav>
     <div class="wrap">
       <div class="wordmark">Intent Discovery AI</div>
-      <a href="tel:+19598810307" class="nav-link">Call Now</a>
+      <a href="#" class="nav-link" data-call-btn data-idle-label="Call Now"><span data-call-label>Call Now</span></a>
     </div>
   </nav>
 
@@ -472,11 +472,11 @@
         <p class="hero-kicker">Voice-powered discovery</p>
         <h1>Uncover what's<br><em>really</em> driving you</h1>
         <p class="hero-lead">A voice agent that moves past what you think you want to surface the subconscious needs hiding underneath. One phone call is all it takes.</p>
-        <a href="tel:+19598810307" class="hero-cta">
+        <a href="#" class="hero-cta" data-call-btn data-idle-label="Talk to the AI">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-          +1 (959) 881-0307
+          <span data-call-label>Talk to the AI</span>
         </a>
-        <p class="hero-aside">Tap to call on mobile &middot; Available 24/7</p>
+        <p class="hero-aside" data-call-status>Live conversation in your browser &middot; Or dial +1 (959) 881-0307</p>
       </div>
     </div>
   </section>
@@ -581,10 +581,11 @@
       <div class="cta-inner reveal">
         <h2>Ready to discover what's<br>really driving you?</h2>
         <p class="cta-sub">One phone call. No signup. No app to install.</p>
-        <a href="tel:+19598810307" class="cta-phone">
+        <a href="#" class="cta-phone" data-call-btn data-idle-label="Talk to the AI">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-          +1 (959) 881-0307
+          <span data-call-label>Talk to the AI</span>
         </a>
+        <p class="hero-aside">Or dial +1 (959) 881-0307</p>
       </div>
     </div>
   </section>
@@ -613,6 +614,88 @@
     } else {
       reveals.forEach(el => el.classList.add('visible'));
     }
+  </script>
+
+  <script type="module">
+    // Browser voice calls via Vapi Web SDK
+    import Vapi from "https://esm.sh/@vapi-ai/web@2.3.8";
+
+    const VAPI_PUBLIC_KEY = "c7d496d8-e4fb-44fe-9ffe-755d41ae32c3";
+    const ASSISTANT_API = "https://intent-discovery-ai.onrender.com/webhook/assistant-request?web=1";
+    const HERO_STATUS_DEFAULT = "Live conversation in your browser · Or dial +1 (959) 881-0307";
+
+    let vapi = null;
+    let state = "idle"; // idle | connecting | active
+
+    const buttons = document.querySelectorAll('[data-call-btn]');
+    const heroStatus = document.querySelector('[data-call-status]');
+
+    function setState(next) {
+      state = next;
+      buttons.forEach(btn => {
+        const label = btn.querySelector('[data-call-label]');
+        const idle = btn.dataset.idleLabel || 'Call now';
+        if (state === 'connecting') label.textContent = 'Connecting…';
+        else if (state === 'active') label.textContent = 'End call';
+        else label.textContent = idle;
+        btn.dataset.state = state;
+      });
+      if (heroStatus) {
+        if (state === 'connecting') heroStatus.textContent = 'Connecting…';
+        else if (state === 'active') heroStatus.textContent = 'In conversation · Click again to end';
+        else heroStatus.textContent = HERO_STATUS_DEFAULT;
+      }
+    }
+
+    function ensureVapi() {
+      if (vapi) return vapi;
+      vapi = new Vapi(VAPI_PUBLIC_KEY);
+      vapi.on('call-start', () => setState('active'));
+      vapi.on('call-end', () => setState('idle'));
+      vapi.on('error', (e) => {
+        console.error('Vapi error:', e);
+        setState('idle');
+      });
+      return vapi;
+    }
+
+    async function startCall() {
+      setState('connecting');
+      try {
+        const res = await fetch(ASSISTANT_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: {
+              type: 'assistant-request',
+              call: { customer: { number: 'web_anonymous_' + Date.now() } }
+            }
+          })
+        });
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        const data = await res.json();
+        if (!data.assistant) throw new Error('No assistant config in response');
+        const v = ensureVapi();
+        await v.start(data.assistant);
+      } catch (err) {
+        console.error('startCall failed:', err);
+        setState('idle');
+        alert('Could not start the call: ' + (err.message || err));
+      }
+    }
+
+    function endCall() {
+      if (vapi) vapi.stop();
+    }
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (state === 'idle') startCall();
+        else if (state === 'active') endCall();
+        // ignore clicks while connecting
+      });
+    });
   </script>
 
 </body>
